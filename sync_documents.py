@@ -224,15 +224,22 @@ def main():
         url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
         driver.get(url_view)
         
-        print("4. Đang chờ khung dữ liệu tải và quét link...")
-        import time; time.sleep(8) # Chờ frameset load hoàn toàn
+        print("4. Đang chờ khung dữ liệu hiển thị và quét link...")
         
+        # Chờ tối đa 30 giây cho đến khi hệ thống render xong và xuất hiện ít nhất 1 link văn bản
+        try:
+            WebDriverWait(driver, 30).until(
+                lambda d: len(thu_thập_link_van_ban(d)) > 0
+            )
+        except Exception:
+            print("[!] Hết thời gian chờ khung dữ liệu load.")
+
         all_doc_urls = thu_thập_link_van_ban(driver)
         print(f"-> Tìm thấy {len(all_doc_urls)} văn bản ở Trang 1.")
 
         if chuyen_trang_2(driver):
             print("-> Đang chuyển sang Trang 2...")
-            time.sleep(4)
+            import time; time.sleep(4)
             doc_urls_trang2 = thu_thập_link_van_ban(driver)
             print(f"-> Tìm thấy {len(doc_urls_trang2)} văn bản ở Trang 2.")
             for u in doc_urls_trang2:
