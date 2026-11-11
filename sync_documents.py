@@ -78,30 +78,40 @@ def dang_nhap(driver):
     print("-> Đăng nhập thành công vào hệ thống HSCV!")
 
 def thu_thập_link_van_ban(driver):
-    """Quét đệ quy toàn bộ khung (iframe/frame) để tìm chuẩn xác tất cả các link văn bản đến"""
+    """Chỉ lấy các link văn bản nằm trong hàng (tr) có chứa checkbox chọn văn bản (Loại bỏ menu rác)"""
     doc_urls = []
     
     def quet_khung(drv, depth=0):
         if depth > 4: 
             return
-        for link in drv.find_elements(By.CSS_SELECTOR, "a[href]"):
+        
+        # Tìm tất cả các hàng <tr> trong bảng dữ liệu
+        rows = drv.find_elements(By.TAG_NAME, "tr")
+        for row in rows:
             try:
-                href = link.get_attribute("href") or ""
-                parsed = urlparse(href)
-                path = parsed.path.casefold()
+                # Kiểm tra hàng có chứa checkbox chọn văn bản không
+                checkboxes = row.find_elements(By.XPATH, ".//input[@type='checkbox']")
+                if not checkboxes:
+                    continue
                 
-                # Mở rộng điều kiện bắt mọi dạng link văn bản đến (str, 0, opendocument)
-                is_doc_link = (
-                    parsed.hostname == HOST and
-                    any(sub in path for sub in ["/vbden.nsf/str/", "/vbden.nsf/0/", "opendocument"]) and
-                    "openview" not in path and
-                    "openform" not in path and
-                    "default" not in path and
-                    "login" not in path and "logout" not in path
-                )
-                
-                if is_doc_link and href not in doc_urls:
-                    doc_urls.append(href)
+                # Lấy link văn bản trong hàng này
+                links = row.find_elements(By.XPATH, ".//a[contains(@href, '/vbden.nsf/str/') or contains(@href, '/vbden.nsf/0/') or contains(@href, 'OpenDocument')]")
+                for link in links:
+                    href = link.get_attribute("href") or ""
+                    parsed = urlparse(href)
+                    path = parsed.path.casefold()
+                    
+                    is_doc_link = (
+                        parsed.hostname == HOST and
+                        any(sub in path for sub in ["/vbden.nsf/str/", "/vbden.nsf/0/", "opendocument"]) and
+                        "openview" not in path and
+                        "openform" not in path and
+                        "default" not in path and
+                        "login" not in path and "logout" not in path
+                    )
+                    
+                    if is_doc_link and href not in doc_urls:
+                        doc_urls.append(href)
             except Exception:
                 continue
                 
@@ -224,8 +234,8 @@ def main():
         url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
         driver.get(url_view)
         
-        print("4. Đang chờ khung dữ liệu hiển thị và quét link...")
-        import time; time.sleep(6) # Chờ frameset load hoàn toàn
+        print("4. Đang chờ khung dữ liệu hiển thị và quét link chuẩn...")
+        import time; time.sleep(6)
         
         try:
             WebDriverWait(driver, 20).until(
@@ -235,7 +245,7 @@ def main():
             print("[!] Hết thời gian chờ khung dữ liệu load.")
 
         all_doc_urls = thu_thập_link_van_ban(driver)
-        print(f"-> Tìm thấy {len(all_doc_urls)} văn bản ở Trang 1.")
+        print(f"-> Tìm thấy chuẩn xác {len(all_doc_urls)} văn bản ở Trang 1.")
 
         if chuyen_trang_2(driver):
             print("-> Đang chuyển sang Trang 2...")
@@ -249,7 +259,7 @@ def main():
         print(f"==> Tổng số văn bản cần kiểm tra: {len(all_doc_urls)}")
 
         if len(all_doc_urls) == 0:
-            print("[!] Cảnh báo: Không quét được văn bản nào. Kiểm tra lại khung giao diện.")
+            print("[!] Cảnh báo: Không quét được văn bản nào.")
             return 1
 
         DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
