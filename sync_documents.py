@@ -84,7 +84,6 @@ def thu_thập_link_van_ban(driver):
     def quet_khung(drv, depth=0):
         if depth > 4: 
             return
-        # Quét các thẻ a dẫn đến trang chi tiết văn bản đến
         for link in drv.find_elements(By.XPATH, "//a[contains(@href, '/vbden.nsf/str/')]"):
             try:
                 href = link.get_attribute("href") or ""
@@ -105,7 +104,6 @@ def thu_thập_link_van_ban(driver):
             except Exception:
                 continue
                 
-        # Tiếp tục chui vào các frame/iframe con bên trong
         for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
             try:
                 drv.switch_to.frame(f)
@@ -220,13 +218,40 @@ def main():
         print("2. Đang đăng nhập hệ thống văn bản...")
         dang_nhap(driver)
         
-        print("3. Đang truy cập chính xác danh sách Xử lý văn bản cá nhân...")
-        url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
-        driver.get(url_view)
+        print("3. Đang tìm và mở menu 'Văn bản chờ xử lý'...")
+        driver.switch_to.default_content()
         
+        # Hàm tự động click vào menu "Văn bản chờ xử lý" qua các frame
+        da_click = False
+        def click_menu_cho_xuly(drv):
+            nonlocal da_click
+            try:
+                elements = drv.find_elements(By.XPATH, "//*[contains(text(), 'Văn bản chờ xử lý')]")
+                for el in elements:
+                    if el.is_displayed():
+                        drv.execute_script("arguments[0].click();", el)
+                        da_click = True
+                        return True
+            except Exception:
+                pass
+            
+            for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+                try:
+                    drv.switch_to.frame(f)
+                    if click_menu_cho_xuly(drv):
+                        return True
+                    drv.switch_to.parent_frame()
+                except Exception:
+                    drv.switch_to.default_content()
+            return False
+
+        click_menu_cho_xuly(driver)
+        
+        if not da_click:
+            print("-> Không tìm thấy menu bằng click, đang điều hướng trực tiếp bằng URL...")
+            driver.get(f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm")
+
         print("4. Đang chờ khung dữ liệu hiển thị và quét link...")
-        
-        # Chờ tối đa 30 giây cho đến khi hệ thống render xong và xuất hiện ít nhất 1 link văn bản
         try:
             WebDriverWait(driver, 30).until(
                 lambda d: len(thu_thập_link_van_ban(d)) > 0
