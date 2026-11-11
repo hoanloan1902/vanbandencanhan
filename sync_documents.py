@@ -30,11 +30,6 @@ try:
 except ImportError:
     genai = None
 
-try:
-    import gspread
-except ImportError:
-    gspread = None
-
 # ==========================================
 # CẤU HÌNH HỆ THỐNG & TÍCH HỢP
 # ==========================================
@@ -49,12 +44,6 @@ TELEGRAM_CHAT_ID = "7113441083"
 # Thư mục lưu trữ tạm thời trên GitHub Actions
 DRIVE_ROOT = Path("VanBanCoHan")
 MAX_BYTES = 30 * 1024 * 1024
-
-# Cấu hình Google Sheets & Docs (Lấy từ biến môi trường GitHub Secrets nếu có)
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
-GOOGLE_DOCS_ID = os.getenv("GOOGLE_DOCS_ID", "")
-GOOGLE_WORKSHEET = os.getenv("GOOGLE_WORKSHEET", "VB_Den")
-CREDENTIALS_FILE = "credentials/service-account.json"
 
 def tao_trinh_duyet():
     options = Options()
@@ -89,28 +78,67 @@ def dang_nhap(driver):
     print("-> Đăng nhập thành công vào hệ thống HSCV!")
 
 def thu_thập_link_van_ban(driver):
-    """Quét chính xác các liên kết văn bản đến cá nhân từ bảng dữ liệu"""
+    """Quét đệ quy toàn bộ khung (iframe/frame) để tìm chuẩn xác các link văn bản đến cá nhân"""
     doc_urls = []
-    # Tìm tất cả các thẻ a dẫn đến trang chi tiết văn bản đến
-    links = driver.find_elements(By.XPATH, "//a[contains(@href, '/vbden.nsf/str/')]")
-    for link in links:
-        try:
-            href = link.get_attribute("href")
-            if href and href not in doc_urls:
-                doc_urls.append(href)
-        except Exception:
-            continue
+    
+    def quet_khung(drv, depth=0):
+        if depth > 4: 
+            return
+        # Quét các thẻ a dẫn đến trang chi tiết văn bản đến
+        for link in drv.find_elements(By.XPATH, "//a[contains(@href, '/vbden.nsf/str/')]"):
+            try:
+                href = link.get_attribute("href") or ""
+                parsed = urlparse(href)
+                path = parsed.path.casefold()
+                
+                is_doc_link = (
+                    parsed.hostname == HOST and
+                    any(sub in path for sub in ["/vbden.nsf/str/", "/vbden.nsf/0/", "opendocument"]) and
+                    "openview" not in path and
+                    "openform" not in path and
+                    "default" not in path and
+                    "login" not in path and "logout" not in path
+                )
+                
+                if is_doc_link and href not in doc_urls:
+                    doc_urls.append(href)
+            except Exception:
+                continue
+                
+        # Tiếp tục chui vào các frame/iframe con bên trong
+        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+            try:
+                drv.switch_to.frame(f)
+                quet_khung(drv, depth + 1)
+                drv.switch_to.parent_frame()
+            except Exception:
+                drv.switch_to.default_content()
+
+    driver.switch_to.default_content()
+    quet_khung(driver)
     return doc_urls
 
 def chuyen_trang_2(driver):
-    try:
-        next_button = driver.find_element(By.XPATH, "//*[contains(text(), 'Trang 2') or contains(@title, 'Trang sau') or contains(text(), '>')]")
-        if next_button.is_displayed():
-            driver.execute_script("arguments[0].click();", next_button)
-            return True
-    except:
-        pass
-    return False
+    def click_next(drv):
+        try:
+            elements = drv.find_elements(By.XPATH, "//*[contains(text(), 'Trang 2') or contains(@title, 'Trang sau') or contains(text(), '>') or contains(@class, 'next')]")
+            for el in elements:
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    return True
+        except Exception:
+            pass
+        
+        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+            try:
+                drv.switch_to.frame(f)
+                if click_next(drv):
+                    return True
+                drv.switch_to.parent_frame()
+            except Exception:
+                drv.switch_to.default_content()
+        return False
+    return click_next(driver)
 
 def tim_file_pdf(driver):
     files = {}
@@ -179,7 +207,7 @@ def gui_telegram(han_xu_ly, summary_text, file_path):
         url_doc = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
         with open(file_path, "rb") as f:
             requests.post(url_doc, data={"chat_id": TELEGRAM_CHAT_ID}, files={"document": f}, verify=False, timeout=30)
-        print("-> [Telegram] Đã gửi thông báo và văn bản gốc thành công!")
+        print("-> [Telegram] Đã gửi thông tin và văn bản gốc thành công!")
     except Exception as e:
         print(f"[!] Lỗi gửi Telegram: {e}")
 
@@ -192,24 +220,19 @@ def main():
         print("2. Đang đăng nhập hệ thống văn bản...")
         dang_nhap(driver)
         
-        print("3. Đang truy cập danh sách Xử lý văn bản cá nhân...")
+        print("3. Đang truy cập chính xác danh sách Xử lý văn bản cá nhân...")
         url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
         driver.get(url_view)
         
-        import time; time.sleep(5)
-        try:
-             iframe = driver.find_element(By.XPATH, "//iframe[contains(@src, 'Private_ChoXL')]")
-             driver.switch_to.frame(iframe)
-        except Exception:
-             pass
-
-        print("4. Đang quét danh sách văn bản Trang 1...")
+        print("4. Đang chờ khung dữ liệu tải và quét link...")
+        import time; time.sleep(8) # Chờ frameset load hoàn toàn
+        
         all_doc_urls = thu_thập_link_van_ban(driver)
         print(f"-> Tìm thấy {len(all_doc_urls)} văn bản ở Trang 1.")
 
         if chuyen_trang_2(driver):
             print("-> Đang chuyển sang Trang 2...")
-            time.sleep(3)
+            time.sleep(4)
             doc_urls_trang2 = thu_thập_link_van_ban(driver)
             print(f"-> Tìm thấy {len(doc_urls_trang2)} văn bản ở Trang 2.")
             for u in doc_urls_trang2:
@@ -217,6 +240,10 @@ def main():
                     all_doc_urls.append(u)
 
         print(f"==> Tổng số văn bản cần kiểm tra: {len(all_doc_urls)}")
+
+        if len(all_doc_urls) == 0:
+            print("[!] Cảnh báo: Không quét được văn bản nào. Kiểm tra lại khung giao diện.")
+            return 1
 
         DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
         danh_sach_tong_hop = []
