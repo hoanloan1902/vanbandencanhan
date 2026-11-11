@@ -110,28 +110,6 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
     quet_khung(driver)
     return danh_sach
 
-def chuyen_trang_2(driver):
-    def click_next(drv):
-        try:
-            elements = drv.find_elements(By.XPATH, "//*[contains(text(), 'Trang 2') or contains(@title, 'Trang sau') or contains(text(), '>') or contains(@class, 'next')]")
-            for el in elements:
-                if el.is_displayed():
-                    drv.execute_script("arguments[0].click();", el)
-                    return True
-        except Exception:
-            pass
-        
-        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
-            try:
-                drv.switch_to.frame(f)
-                if click_next(drv):
-                    return True
-                drv.switch_to.parent_frame()
-            except Exception:
-                drv.switch_to.default_content()
-        return False
-    return click_next(driver)
-
 def tim_file_pdf(driver):
     files = {}
     for link in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
@@ -177,43 +155,27 @@ def kiem_tra_va_trich_xuat_chu(pdf_data):
     except Exception:
         return ""
 
-def trich_xuat_thong_tin_chi_tiet(row_text, pdf_text):
-    """
-    Bóc tách Số hiệu, Trích yếu và Hạn xử lý trực tiếp từ cả bảng web và nội dung PDF.
-    """
+def trich_xuat_thong_tin_chuan(row_text, pdf_text):
     so_hieu = "Không xác định"
     trich_yeu = ""
     han_xu_ly = "Không có hạn"
 
-    combined_text = row_text + "\n" + pdf_text
-
-    # 1. Cải tiến bóc tách Số hiệu văn bản (bắt linh hoạt các định dạng số/ký hiệu hành chính)
-    match_so = re.search(r'(?:số[:\s]*)?([0-9]+[\s/]?[A-Za-z0-9\-_./]+(?:UBND|STC|SKHCN|VPCP|TƯ|QHKH|BXD|BKHCN|BNN|BTC|BGDĐT|BYT)[A-Za-z0-9\-_./]*)', combined_text, re.IGNORECASE)
+    # Bóc tách số hiệu chuẩn xác (tránh bắt nhầm ngày tháng)
+    match_so = re.search(r'\b([0-9]+[/-][A-Za-z0-9\-./]+(?:UBND|STC|SKHCN|VPCP|TƯ|BXD|BKHCN|BNN|BTC|BYT|SXD|TTTH)[A-Za-z0-9\-./]*)\b', row_text)
     if match_so:
         so_hieu = match_so.group(1).strip()
     else:
-        # Dự phòng bắt theo mẫu số hiệu thông thường chứa dấu gạch chéo
-        match_so_alt = re.search(r'\b([0-9]{1,5}/[A-Za-z0-9\-.]+)\b', row_text)
-        if match_so_alt:
-            so_hieu = match_so_alt.group(1).strip()
+        match_alt = re.search(r'\b([0-9]{1,4}/[A-Za-z0-9\-.]+)\b', row_text)
+        if match_alt:
+            so_hieu = match_alt.group(1).strip()
 
-    # 2. Cải tiến lấy Trích yếu đầy đủ (ưu tiên lấy nội dung mô tả từ PDF hoặc dòng bảng)
-    if pdf_text:
-        # Tìm đoạn chữ thường nằm sau các từ khóa trích yếu trong PDF
-        lines = pdf_text.split('\n')
-        potential_trich_yeu = []
-        for line in lines:
-            line_clean = line.strip()
-            if len(line_clean) > 20 and not any(kw in line_clean.lower() for kw in ["cộng hòa", "độc lập", "ủy ban", "kính gửi", "số:"]):
-                potential_trich_yeu.append(line_clean)
-        if potential_trich_yeu:
-            trich_yeu = " ".join(potential_trich_yeu[:2])[:200] # Lấy 2 dòng đầu làm trích yếu
-            
-    if not trich_yeu or len(trich_yeu) < 10:
-        # Nếu PDF không rõ, lấy từ text trên bảng web
-        trich_yeu = row_text[:200]
+    # Lấy trích yếu từ dòng bảng web
+    clean_row = re.sub(r'^\d+[\s\.]+', '', row_text).strip()
+    if len(clean_row) > 10:
+        trich_yeu = clean_row
 
-    # 3. Phân loại hạn xử lý theo đúng quy tắc
+    combined_text = row_text + "\n" + pdf_text
+    
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở, ban, ngành|các sở, ban, ngành, đoàn thể|các cơ quan, đơn vị|UBND các huyện, thị xã, thành phố)", combined_text))
     giao_rieng_so_khac = bool(re.search(r"(?i)sở\s+(?:giao thông vận tải|y tế|giáo dục và đào tạo|tài chính|tài nguyên và môi trường|nông nghiệp và phát triển nông thôn|lao động)", combined_text))
@@ -264,22 +226,15 @@ def main():
         
         import time; time.sleep(6)
         tat_ca_van_ban = thu_thập_thong_tin_trang_hien_tai(driver)
-        print(f"-> Tìm thấy {len(tat_ca_van_ban)} văn bản ở Trang 1.")
-
-        if chuyen_trang_2(driver):
-            print("-> Đang chuyển sang Trang 2...")
-            time.sleep(4)
-            trang_2_vb = thu_thập_thong_tin_trang_hien_tai(driver)
-            print(f"-> Tìm thấy {len(trang_2_vb)} văn bản ở Trang 2.")
-            for item in trang_2_vb:
-                if item not in tat_ca_van_ban:
-                    tat_ca_van_ban.append(item)
-
-        print(f"==> Tổng số văn bản cần xử lý: {len(tat_ca_van_ban)}")
+        
+        # GIỚI HẠN CHỈ TEST 10 VĂN BẢN ĐẦU TIÊN CHO NHANH
+        tat_ca_van_ban = tat_ca_van_ban[:10]
+        print(f"==> Tiến hành test nhanh {len(tat_ca_van_ban)} văn bản đầu tiên.")
+        
         danh_sach_ket_qua = []
 
         for idx, vb in enumerate(tat_ca_van_ban, start=1):
-            print(f"\n--- Xử lý văn bản {idx}/{len(tat_ca_van_ban)} ---")
+            print(f"\n--- Xử lý văn bản {idx}/10 ---")
             try:
                 driver.get(vb["url"])
                 WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
@@ -291,10 +246,10 @@ def main():
                     try:
                         pdf_data = tai_pdf(driver, pdf_url, vb["url"])
                         pdf_text = kiem_tra_va_trich_xuat_chu(pdf_data)
-                    except Exception as pdf_err:
-                        print(f"  [!] Lưu ý khi đọc PDF: {pdf_err}")
+                    except Exception:
+                        pass
 
-                so_hieu, trich_yeu, han_xu_ly = trich_xuat_thong_tin_chi_tiet(vb["row_text"], pdf_text)
+                so_hieu, trich_yeu, han_xu_ly = trich_xuat_thong_tin_chuan(vb["row_text"], pdf_text)
                 
                 print(f"  -> Số hiệu: {so_hieu} | Hạn: {han_xu_ly}")
                 danh_sach_ket_qua.append({
@@ -305,10 +260,10 @@ def main():
             except Exception as e:
                 print(f"  [!] Lỗi xử lý văn bản này: {e}")
 
-        print("\n5. Đang đẩy dữ liệu lên Google Sheets...")
+        print("\n5. Đang đẩy dữ liệu test lên Google Sheets...")
         day_du_lieu_len_google_sheets(danh_sach_ket_qua)
         
-        print("\n=== HOÀN TẤT ===")
+        print("\n=== HOÀN TẤT TEST 10 VĂN BẢN! ===")
         return 0
 
     except Exception as error:
