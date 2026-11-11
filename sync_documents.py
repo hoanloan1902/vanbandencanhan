@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from datetime import datetime
+import json
 
 import requests
 import urllib3
@@ -17,7 +18,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-# Ép Python in log ngay lập tức theo thời gian thực trên GitHub Actions
 def print(*args, **kwargs):
     kwargs.setdefault('flush', True)
     builtins.print(*args, **kwargs)
@@ -25,22 +25,11 @@ def print(*args, **kwargs):
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
 
-try:
-    import gspread
-except ImportError:
-    gspread = None
-
-# ==========================================
-# CẤU HÌNH HỆ THỐNG & GOOGLE SHEETS
-# ==========================================
+# Cấu hình hệ thống
 HOST = "hscvkhcn.dienbien.gov.vn"
 URL_LOGIN = f"https://{HOST}/qlvb/index.nsf"
 USERNAME = "hoanph.skhcn"
-
-# Cấu hình Google Sheets từ GitHub Secrets
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
-GOOGLE_WORKSHEET = os.getenv("GOOGLE_WORKSHEET", "VB_Den")
-CREDENTIALS_FILE = "credentials/service-account.json"
+GOOGLE_WEB_APP_URL = os.getenv("GOOGLE_WEB_APP_URL", "")
 
 def tao_trinh_duyet():
     options = Options()
@@ -191,90 +180,70 @@ def kiem_tra_va_trich_xuat_chu(pdf_data):
 
 def trich_xuat_thong_tin_chi_tiet(row_text, pdf_text):
     """
-    Bóc tách Số hiệu, Trích yếu và quy tắc hạn xử lý:
-    - Nếu có mốc thời gian và (giao riêng Sở KH&CN HOẶC giao chung các sở ban ngành) -> Có hạn.
-    - Chỉ giao riêng cho sở/ngành khác (không dính dáng gì đến Sở KH&CN) -> Không có hạn.
+    Quy tắc hạn xử lý:
+    - Giao riêng cho Sở KH&CN hoặc giao chung các sở ban ngành có thời hạn -> Có hạn.
+    - Chỉ giao riêng cho sở/ngành khác (không dính dáng đến Sở KH&CN) -> Không có hạn.
     """
     so_hieu = "Không xác định"
-    trich_yeu = row_text[:100]
+    trich_yeu = row_text[:120]
     han_xu_ly = "Không có hạn"
 
-    # 1. Bóc tách số hiệu
+    # Bóc tách số hiệu văn bản
     match_so = re.search(r'([A-Za-z0-9/-]+(?:UBND|STC|SKHCN|VPCP)[A-Za-z0-9/-]*)', row_text)
     if match_so:
         so_hieu = match_so.group(1)
 
-    # 2. Phân tích nội dung văn bản
     combined_text = row_text + "\n" + pdf_text
     
-    # Kiểm tra đối tượng nhận/chủ trì
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở, ban, ngành|các sở, ban, ngành, đoàn thể|các cơ quan, đơn vị|UBND các huyện, thị xã, thành phố)", combined_text))
-    
-    # Kiểm tra xem có giao riêng cho một sở khác cụ thể nào không (ví dụ: Sở GTVT, Sở Y Tế...) mà không có tên Sở KH&CN
     giao_rieng_so_khac = bool(re.search(r"(?i)sở\s+(?:giao thông vận tải|y tế|giáo dục và đào tạo|tài chính|tài nguyên và môi trường|nông nghiệp và phát triển nông thôn|lao động)", combined_text))
 
-    # Tìm mốc thời hạn trong văn bản
     match_han = re.search(r"(?i)(?:trước ngày|chậm nhất ngày|hoàn thành trước ngày|thời hạn báo cáo|thực hiện trước)\s*[:]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", combined_text)
     
     if match_han:
         ngay_tim_thay = match_han.group(1)
-        
-        # Điều kiện để tính là "Có hạn":
-        # - Hoặc là có nhắc đến Sở KH&CN
-        # - Hoặc là giao chung chung cho các sở ban ngành
-        # - Miễn là KHÔNG phải chỉ giao riêng cho một sở khác độc lập
         if lien_quan_skhcn or giao_chung_cac_so or not giao_rieng_so_khac:
             han_xu_ly = f"Trước ngày {ngay_tim_thay}"
 
     return so_hieu, trich_yeu, han_xu_ly
 
-def cap_nhat_google_sheets(danh_sach_ket_qua):
-    if not Path(CREDENTIALS_FILE).exists() or not GOOGLE_SHEET_ID or not gspread:
-        print("[!] Thiếu cấu hình Google Sheets.")
+def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
+    if not GOOGLE_WEB_APP_URL:
+        print("[!] Chưa cấu hình GOOGLE_WEB_APP_URL.")
         return
 
     try:
-        client = gspread.service_account(filename=CREDENTIALS_FILE)
-        book = client.open_by_key(GOOGLE_SHEET_ID)
-        try:
-            sheet = book.worksheet(GOOGLE_WORKSHEET)
-        except gspread.WorksheetNotFound:
-            sheet = book.add_worksheet(title=GOOGLE_WORKSHEET, rows=1000, cols=10)
-        
-        sheet.clear()
-        sheet.append_row(["STT", "Số hiệu văn bản", "trích yếu", "hạn xử lý", "Trạng thái", "Lần kiểm tra gần nhất"])
-        
         thoi_gian_hien_tai = datetime.now().strftime("%d/11/2026 %H:%M:%S")
+        payload = []
         for idx, item in enumerate(danh_sach_ket_qua, start=1):
-            sheet.append_row([
-                idx,
-                item["so_hieu"],
-                item["trich_yeu"],
-                item["han_xu_ly"],
-                "Chờ xử lý",
-                thoi_gian_hien_tai
-            ])
-        print("-> [Google Sheets] Đã đồng bộ thành công!")
+            payload.append({
+                "stt": idx,
+                "so_hieu": item["so_hieu"],
+                "trich_yeu": item["trich_yeu"],
+                "han_xu_ly": item["han_xu_ly"],
+                "thoi_gian": thoi_gian_hien_tai
+            })
+        
+        response = requests.post(GOOGLE_WEB_APP_URL, json=payload, timeout=30, verify=False)
+        print(f"-> [Google Sheets Web App] Phản hồi: {response.text}")
     except Exception as e:
-        print(f"[!] Lỗi đồng bộ Google Sheets: {e}")
+        print(f"[!] Lỗi đẩy dữ liệu lên Google Sheets: {e}")
 
 def main():
     driver = None
     try:
-        print("1. Đang khởi động Chrome (Headless)...")
+        print("1. Đang khởi động Chrome...")
         driver = tao_trinh_duyet()
 
         print("2. Đang đăng nhập hệ thống văn bản...")
         dang_nhap(driver)
         
-        print("3. Đang truy cập danh sách 'Xử lý văn bản cá nhân'...")
+        print("3. Đang truy cập danh sách văn bản...")
         url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
         driver.get(url_view)
         
-        print("4. Đang chờ tải dữ liệu trang 1...")
         import time; time.sleep(6)
-        
         tat_ca_van_ban = thu_thập_thong_tin_trang_hien_tai(driver)
         print(f"-> Tìm thấy {len(tat_ca_van_ban)} văn bản ở Trang 1.")
 
@@ -288,7 +257,6 @@ def main():
                     tat_ca_van_ban.append(item)
 
         print(f"==> Tổng số văn bản cần xử lý: {len(tat_ca_van_ban)}")
-
         danh_sach_ket_qua = []
 
         for idx, vb in enumerate(tat_ca_van_ban, start=1):
@@ -315,14 +283,14 @@ def main():
             except Exception as e:
                 print(f"  [!] Lỗi đọc văn bản này: {e}")
 
-        print("\n5. Đang cập nhật dữ liệu lên Google Sheets...")
-        cap_nhat_google_sheets(danh_sach_ket_qua)
+        print("\n5. Đang đẩy dữ liệu lên Google Sheets...")
+        day_du_lieu_len_google_sheets(danh_sach_ket_qua)
         
-        print("\n=== HOÀN TẤT ĐỒNG BỘ DANH SÁCH VĂN BẢN ĐẾN! ===")
+        print("\n=== HOÀN TẤT ===")
         return 0
 
     except Exception as error:
-        print(f"\n[!] LỖI HỆ THỐNG: {error}")
+        print(f"\n[!] LỖI: {error}")
         return 1
     finally:
         if driver: 
