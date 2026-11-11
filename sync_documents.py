@@ -25,7 +25,6 @@ def print(*args, **kwargs):
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
 
-# Cấu hình hệ thống
 HOST = "hscvkhcn.dienbien.gov.vn"
 URL_LOGIN = f"https://{HOST}/qlvb/index.nsf"
 USERNAME = "hoanph.skhcn"
@@ -180,21 +179,41 @@ def kiem_tra_va_trich_xuat_chu(pdf_data):
 
 def trich_xuat_thong_tin_chi_tiet(row_text, pdf_text):
     """
-    Quy tắc hạn xử lý:
-    - Giao riêng cho Sở KH&CN hoặc giao chung các sở ban ngành có thời hạn -> Có hạn.
-    - Chỉ giao riêng cho sở/ngành khác (không dính dáng đến Sở KH&CN) -> Không có hạn.
+    Bóc tách Số hiệu, Trích yếu và Hạn xử lý trực tiếp từ cả bảng web và nội dung PDF.
     """
     so_hieu = "Không xác định"
-    trich_yeu = row_text[:120]
+    trich_yeu = ""
     han_xu_ly = "Không có hạn"
 
-    # Bóc tách số hiệu văn bản
-    match_so = re.search(r'([A-Za-z0-9/-]+(?:UBND|STC|SKHCN|VPCP)[A-Za-z0-9/-]*)', row_text)
-    if match_so:
-        so_hieu = match_so.group(1)
-
     combined_text = row_text + "\n" + pdf_text
-    
+
+    # 1. Cải tiến bóc tách Số hiệu văn bản (bắt linh hoạt các định dạng số/ký hiệu hành chính)
+    match_so = re.search(r'(?:số[:\s]*)?([0-9]+[\s/]?[A-Za-z0-9\-_./]+(?:UBND|STC|SKHCN|VPCP|TƯ|QHKH|BXD|BKHCN|BNN|BTC|BGDĐT|BYT)[A-Za-z0-9\-_./]*)', combined_text, re.IGNORECASE)
+    if match_so:
+        so_hieu = match_so.group(1).strip()
+    else:
+        # Dự phòng bắt theo mẫu số hiệu thông thường chứa dấu gạch chéo
+        match_so_alt = re.search(r'\b([0-9]{1,5}/[A-Za-z0-9\-.]+)\b', row_text)
+        if match_so_alt:
+            so_hieu = match_so_alt.group(1).strip()
+
+    # 2. Cải tiến lấy Trích yếu đầy đủ (ưu tiên lấy nội dung mô tả từ PDF hoặc dòng bảng)
+    if pdf_text:
+        # Tìm đoạn chữ thường nằm sau các từ khóa trích yếu trong PDF
+        lines = pdf_text.split('\n')
+        potential_trich_yeu = []
+        for line in lines:
+            line_clean = line.strip()
+            if len(line_clean) > 20 and not any(kw in line_clean.lower() for kw in ["cộng hòa", "độc lập", "ủy ban", "kính gửi", "số:"]):
+                potential_trich_yeu.append(line_clean)
+        if potential_trich_yeu:
+            trich_yeu = " ".join(potential_trich_yeu[:2])[:200] # Lấy 2 dòng đầu làm trích yếu
+            
+    if not trich_yeu or len(trich_yeu) < 10:
+        # Nếu PDF không rõ, lấy từ text trên bảng web
+        trich_yeu = row_text[:200]
+
+    # 3. Phân loại hạn xử lý theo đúng quy tắc
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở, ban, ngành|các sở, ban, ngành, đoàn thể|các cơ quan, đơn vị|UBND các huyện, thị xã, thành phố)", combined_text))
     giao_rieng_so_khac = bool(re.search(r"(?i)sở\s+(?:giao thông vận tải|y tế|giáo dục và đào tạo|tài chính|tài nguyên và môi trường|nông nghiệp và phát triển nông thôn|lao động)", combined_text))
@@ -269,8 +288,11 @@ def main():
                 pdf_text = ""
                 if files:
                     pdf_url = next(iter(files.keys()))
-                    pdf_data = tai_pdf(driver, pdf_url, vb["url"])
-                    pdf_text = kiem_tra_va_trich_xuat_chu(pdf_data)
+                    try:
+                        pdf_data = tai_pdf(driver, pdf_url, vb["url"])
+                        pdf_text = kiem_tra_va_trich_xuat_chu(pdf_data)
+                    except Exception as pdf_err:
+                        print(f"  [!] Lưu ý khi đọc PDF: {pdf_err}")
 
                 so_hieu, trich_yeu, han_xu_ly = trich_xuat_thong_tin_chi_tiet(vb["row_text"], pdf_text)
                 
@@ -281,7 +303,7 @@ def main():
                     "han_xu_ly": han_xu_ly
                 })
             except Exception as e:
-                print(f"  [!] Lỗi đọc văn bản này: {e}")
+                print(f"  [!] Lỗi xử lý văn bản này: {e}")
 
         print("\n5. Đang đẩy dữ liệu lên Google Sheets...")
         day_du_lieu_len_google_sheets(danh_sach_ket_qua)
