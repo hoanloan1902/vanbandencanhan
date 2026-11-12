@@ -2,11 +2,12 @@ import builtins
 import os
 import re
 import sys
+import time
 import warnings
 import unicodedata
 from io import BytesIO
 from urllib.parse import unquote, urlparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests
 import urllib3
@@ -61,9 +62,8 @@ def dang_nhap(driver):
     wait.until(EC.invisibility_of_element_located((By.NAME, "Password")))
     print("-> Đăng nhập thành công vào hệ thống HSCV!")
 
-def thu_thập_thong_tin_trang_hien_tai(driver):
+def thu_thập_thong_tin_trang_hien_tai(driver, seen_urls):
     danh_sach = []
-    seen_urls = set()
     
     def quet_khung(drv, depth=0):
         if depth > 4: 
@@ -87,7 +87,6 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
                         url_detail = href
                         break
                 
-                # Khử trùng lặp tuyệt đối theo đường dẫn gốc (bỏ qua tham số ngẫu nhiên phía sau)
                 if url_detail:
                     base_url = url_detail.split("?")[0]
                     if base_url not in seen_urls:
@@ -110,6 +109,38 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
     driver.switch_to.default_content()
     quet_khung(driver)
     return danh_sach
+
+def chuyen_trang_tiep(driver, so_trang_tiep):
+    def click_next(drv):
+        try:
+            # Tìm nút chuyển đúng số trang tiếp theo hoặc nút Trang sau / >
+            xpath_expr = (
+                f"//*[normalize-space(text())='Trang {so_trang_tiep}' "
+                f"or normalize-space(text())='{so_trang_tiep}' "
+                f"or contains(@title, 'Trang sau') "
+                f"or normalize-space(text())='>' "
+                f"or contains(@class, 'next')]"
+            )
+            elements = drv.find_elements(By.XPATH, xpath_expr)
+            for el in elements:
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    return True
+        except Exception:
+            pass
+        
+        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+            try:
+                drv.switch_to.frame(f)
+                if click_next(drv):
+                    return True
+                drv.switch_to.parent_frame()
+            except Exception:
+                drv.switch_to.default_content()
+        return False
+
+    driver.switch_to.default_content()
+    return click_next(driver)
 
 def chuan_hoa(text):
     text = unicodedata.normalize("NFC", text or "")
@@ -254,7 +285,6 @@ def tim_file_dongdau_moi_nhat(driver):
         dongdau_files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
         return dongdau_files[0]
 
-    # Nếu không có chữ dongdau, vẫn ưu tiên file PDF có mốc thời gian đóng dấu/ký số mới nhất
     files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
     return files[0]
 
@@ -275,7 +305,6 @@ def tai_pdf(driver, pdf_url, detail_url):
         return response.content
 
 def kiem_tra_va_trich_xuat_chu(pdf_data):
-    # Cắt bỏ rác trước %PDF- nếu server trả kèm byte thừa ở đầu file
     idx_pdf = pdf_data.find(b"%PDF-")
     if idx_pdf > 0:
         pdf_data = pdf_data[idx_pdf:]
@@ -302,24 +331,16 @@ def parse_ngay_vn(ngay_str):
     return None
 
 def xac_dinh_han_xu_ly(thong_tin, pdf_text):
-    """
-    - Bắt tất cả các cụm từ giao hạn (trước ngày, trong ngày, chậm nhất ngày, hạn cuối...).
-    - Chuyển sang ngày thực tế, loại bỏ các mốc đã qua trước ngày ban hành/ngày đến.
-    - Nếu có nhiều nhiệm vụ với các hạn khác nhau -> tự động lấy HẠN SỚM NHẤT.
-    """
     combined_text = chuan_hoa(thong_tin["trich_yeu"] + " " + pdf_text)
     if not combined_text:
         return "Không có hạn"
 
-    # Kiểm tra đối tượng nhận/giao việc
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở,?\s*(?:ban,?\s*)?ngành|các cơ quan,?\s*đơn vị|ubnd các xã,?\s*phường|ubnd các huyện)", combined_text))
     giao_rieng_so_khac = bool(re.search(r"(?i)sở\s+(?:giao thông vận tải|y tế|giáo dục và đào tạo|tài chính|tài nguyên và môi trường|nông nghiệp và phát triển nông thôn|lao động)", combined_text))
 
-    # Mốc tham chiếu để loại bỏ các mốc lịch sử trong phần căn cứ (ví dụ: "hoàn thành trước ngày 28/02/2026" trong văn bản tháng 11/2026)
     ngay_moc = parse_ngay_vn(thong_tin.get("ngay_ban_hanh") or thong_tin.get("ngay_den") or "")
 
-    # Tìm tất cả các mốc thời hạn có kèm từ khóa chỉ đạo
     pattern_han = r"(?i)(?:trước ngày|trong ngày|vào ngày|chậm nhất(?:\s+là)?(?:\s+trong|\s+trước)?\s+ngày|hoàn thành(?:\s+trước|\s+trong)?\s+ngày|thời hạn(?:\s+báo cáo|\s+gửi)?(?:\s+trước|\s+trong)?\s+ngày|thực hiện trước(?:\s+ngày)?|gửi về.*?(?:trước|trong)\s+ngày)\s*[:]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
     
     cac_han_tim_thay = []
@@ -328,7 +349,6 @@ def xac_dinh_han_xu_ly(thong_tin, pdf_text):
         dt = parse_ngay_vn(ngay_raw)
         if not dt:
             continue
-        # Chỉ lấy các mốc từ ngày ban hành/ngày đến trở đi (loại bỏ ngày cũ ở phần "Thực hiện Kế hoạch...")
         if ngay_moc and dt < ngay_moc:
             continue
         cac_han_tim_thay.append((dt, ngay_raw.replace("-", "/")))
@@ -336,11 +356,9 @@ def xac_dinh_han_xu_ly(thong_tin, pdf_text):
     if not cac_han_tim_thay:
         return "Không có hạn"
 
-    # Nếu chỉ giao riêng cho sở khác mà không dính tới Sở KH&CN và không giao chung các sở ngành -> Không có hạn
     if giao_rieng_so_khac and not lien_quan_skhcn and not giao_chung_cac_so:
         return "Không có hạn"
 
-    # Sắp xếp tăng dần theo thời gian để lấy HẠN SỚM NHẤT
     cac_han_tim_thay.sort(key=lambda x: x[0])
     han_som_nhat = cac_han_tim_thay[0][1]
     return f"Trước ngày {han_som_nhat}"
@@ -351,7 +369,8 @@ def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
         return
 
     try:
-        thoi_gian_hien_tai = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        tz_vn = timezone(timedelta(hours=7))
+        thoi_gian_hien_tai = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
         payload = []
         for idx, item in enumerate(danh_sach_ket_qua, start=1):
             payload.append({
@@ -376,17 +395,29 @@ def main():
         print("2. Đang đăng nhập hệ thống văn bản...")
         dang_nhap(driver)
         
-        print("3. Đang truy cập danh sách văn bản...")
+        print("3. Đang truy cập toàn bộ danh sách văn bản chờ xử lý...")
         url_view = f"https://{HOST}/qlvb/vbden.nsf/default?openform&frm=Private_ChoXL?openForm"
         driver.get(url_view)
-        
-        import time; time.sleep(6)
-        tat_ca_van_ban = thu_thập_thong_tin_trang_hien_tai(driver)
-        
-        # Test nhanh 10 văn bản đầu tiên (đã khử trùng lặp)
-        tat_ca_van_ban = tat_ca_van_ban[:10]
-        print(f"==> Tiến hành quét chi tiết {len(tat_ca_van_ban)} văn bản duy nhất đầu tiên.")
-        
+        time.sleep(6)
+
+        seen_urls = set()
+        tat_ca_van_ban = []
+        trang_hien_tai = 1
+
+        while trang_hien_tai <= 10:
+            vb_trang = thu_thập_thong_tin_trang_hien_tai(driver, seen_urls)
+            if not vb_trang:
+                break
+            print(f"-> Trang {trang_hien_tai}: thu thập được {len(vb_trang)} văn bản.")
+            tat_ca_van_ban.extend(vb_trang)
+
+            trang_hien_tai += 1
+            if chuyen_trang_tiep(driver, trang_hien_tai):
+                time.sleep(4)
+            else:
+                break
+
+        print(f"==> Tổng cộng toàn bộ văn bản cần xử lý: {len(tat_ca_van_ban)}")
         danh_sach_ket_qua = []
 
         for idx, vb in enumerate(tat_ca_van_ban, start=1):
@@ -410,9 +441,7 @@ def main():
 
                 han_xu_ly = xac_dinh_han_xu_ly(thong_tin, pdf_text)
                 
-                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Ngày đến: {thong_tin['ngay_den']}")
-                print(f"  -> Trích yếu: {thong_tin['trich_yeu'][:70]}...")
-                print(f"  -> Hạn xử lý: {han_xu_ly}")
+                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Hạn xử lý: {han_xu_ly}")
 
                 danh_sach_ket_qua.append({
                     "so_hieu": thong_tin["so_hieu"],
@@ -422,10 +451,10 @@ def main():
             except Exception as e:
                 print(f"  [!] Lỗi xử lý văn bản này: {e}")
 
-        print("\n5. Đang đẩy dữ liệu lên Google Sheets...")
+        print("\n5. Đang đẩy toàn bộ dữ liệu lên Google Sheets...")
         day_du_lieu_len_google_sheets(danh_sach_ket_qua)
         
-        print("\n=== HOÀN TẤT TEST! ===")
+        print("\n=== HOÀN TẤT ĐỒNG BỘ TOÀN BỘ! ===")
         return 0
 
     except Exception as error:
