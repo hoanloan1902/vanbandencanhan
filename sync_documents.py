@@ -5,10 +5,8 @@ import sys
 import warnings
 import unicodedata
 from io import BytesIO
-from pathlib import Path
 from urllib.parse import unquote, urlparse
 from datetime import datetime
-import json
 
 import requests
 import urllib3
@@ -29,7 +27,7 @@ warnings.filterwarnings("ignore")
 HOST = "hscvkhcn.dienbien.gov.vn"
 URL_LOGIN = f"https://{HOST}/qlvb/index.nsf"
 USERNAME = "hoanph.skhcn"
-GOOGLE_WEB_APP_URL = os.getenv("GOOGLE_WEB_APP_URL", "")
+GOOGLE_WEB_APP_URL = os.getenv("GOOGLE_WEB_APP_URL", "").strip()
 
 def tao_trinh_duyet():
     options = Options()
@@ -108,116 +106,167 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
     quet_khung(driver)
     return danh_sach
 
-def chuyen_trang_2(driver):
-    def click_next(drv):
-        try:
-            elements = drv.find_elements(By.XPATH, "//*[contains(text(), 'Trang 2') or contains(@title, 'Trang sau') or contains(text(), '>') or contains(@class, 'next')]")
-            for el in elements:
-                if el.is_displayed():
-                    drv.execute_script("arguments[0].click();", el)
-                    return True
-        except Exception:
-            pass
-        
-        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
-            try:
-                drv.switch_to.frame(f)
-                if click_next(drv):
-                    return True
-                drv.switch_to.parent_frame()
-            except Exception:
-                drv.switch_to.default_content()
-        return False
-    return click_next(driver)
-
 def chuan_hoa(text):
     text = unicodedata.normalize("NFC", text or "")
     return re.sub(r"\s+", " ", text).strip()
 
-def bo_dau(text):
+def bo_dau_nhan(text):
     text = chuan_hoa(text).casefold()
     text = unicodedata.normalize("NFD", text)
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
-    return text.replace("đ", "d")
+    text = text.replace("đ", "d")
+    text = re.sub(r"\s*/\s*", "/", text)
+    return text.rstrip(":").strip()
 
-def trich_xuat_tu_trang_chi_tiet(driver, fallback_row_text):
+def lay_gia_tri_o(cell):
+    val_text = chuan_hoa(cell.text)
+    controls = cell.find_elements(By.CSS_SELECTOR, "input, textarea, select")
+    for ctrl in controls:
+        if not ctrl.is_displayed():
+            continue
+        ctype = (ctrl.get_attribute("type") or "").casefold()
+        if ctype in {"hidden", "password", "checkbox", "radio"}:
+            continue
+        v = chuan_hoa(ctrl.get_attribute("value"))
+        if v:
+            return v
+    return val_text
+
+def trich_xuat_tu_trang_chi_tiet(driver):
     """
-    Sử dụng logic chuẩn hóa nhãn để quét trực tiếp các trường Số hiệu và Trích yếu từ trang chi tiết văn bản.
+    Đọc chính xác từng ô trong bảng 'Các thông tin cơ bản' theo đúng giao diện Lotus Notes:
+    - Số / ký hiệu: 10152/UBND-KT
+    - Ngày đến: 10/11/2026 | Ngày ban hành: 10/11/2026
+    - Trích yếu: ...
     """
-    so_hieu = "Không xác định"
+    so_ky_hieu = ""
+    ngay_den = ""
+    ngay_ban_hanh = ""
     trich_yeu = ""
 
-    try:
-        rows = driver.find_elements(By.TAG_NAME, "tr")
-        for row in rows:
+    def quet_bang_chi_tiet(drv, depth=0):
+        nonlocal so_ky_hieu, ngay_den, ngay_ban_hanh, trich_yeu
+        if depth > 4:
+            return
+
+        for row in drv.find_elements(By.TAG_NAME, "tr"):
             cells = row.find_elements(By.XPATH, "./th | ./td")
-            if not cells:
+            if len(cells) < 2:
                 continue
-            
-            # Kiểm tra xem hàng này có chứa nhãn cần tìm không
-            for i, cell in enumerate(cells):
-                label_text = bo_dau(cell.text)
-                
-                # Nếu tìm thấy nhãn Số ký hiệu
-                if any(k in label_text for k in ["so/ky hieu", "so ky hieu", "so hieu", "so van ban"]):
-                    # Giá trị thường nằm ở ô kế tiếp (cell tiếp theo) hoặc lấy giá trị input trong ô đó
-                    if i + 1 < len(cells):
-                        val_cell = cells[i + 1]
-                        val_text = chuan_hoa(val_cell.text)
-                        # Kiểm tra xem có input/textarea không
-                        controls = val_cell.find_elements(By.CSS_SELECTOR, "input, textarea")
-                        for ctrl in controls:
-                            if ctrl.is_displayed():
-                                v = chuan_hoa(ctrl.get_attribute("value"))
-                                if v:
-                                    val_text = v
-                                    break
-                        if val_text and len(val_text) < 50:
-                            so_hieu = val_text
-                            
-                # Nếu tìm thấy nhãn Trích yếu
-                elif any(k in label_text for k in ["trich yeu", "noi dung", "trich yeu noi dung"]):
-                    if i + 1 < len(cells):
-                        val_cell = cells[i + 1]
-                        val_text = chuan_hoa(val_cell.text)
-                        controls = val_cell.find_elements(By.CSS_SELECTOR, "input, textarea")
-                        for ctrl in controls:
-                            if ctrl.is_displayed():
-                                v = chuan_hoa(ctrl.get_attribute("value"))
-                                if v:
-                                    val_text = v
-                                    break
-                        if val_text:
-                            trich_yeu = val_text
-    except Exception:
-        pass
 
-    # Fallback dự phòng nếu trang chi tiết cấu trúc khác biệt
-    if so_hieu == "Không xác định":
-        match_so = re.search(r'\b([0-9]+[/-][A-Za-z0-9\-./]+(?:UBND|STC|SKHCN|VPCP|TƯ|BXD|BKHCN|BNN|BTC|BYT|SXD|TTTH)[A-Za-z0-9\-./]*)\b', fallback_row_text)
-        if match_so:
-            so_hieu = match_so.group(1).strip()
+            for i in range(len(cells) - 1):
+                nhan = bo_dau_nhan(cells[i].text)
+                if not nhan or len(nhan) > 40:
+                    continue
 
-    if not trich_yeu:
-        clean_row = re.sub(r'^\d+[\s\.]+', '', fallback_row_text).strip()
-        trich_yeu = clean_row if len(clean_row) > 10 else "Không có trích yếu"
+                gia_tri = lay_gia_tri_o(cells[i + 1])
+                if not gia_tri:
+                    continue
 
-    return so_hieu, trich_yeu
+                if nhan in {"so/ky hieu", "so ky hieu", "so hieu"} and not so_ky_hieu:
+                    so_ky_hieu = gia_tri
+                elif nhan == "ngay den" and not ngay_den:
+                    ngay_den = gia_tri
+                elif nhan in {"ngay ban hanh", "ngay van ban"} and not ngay_ban_hanh:
+                    ngay_ban_hanh = gia_tri
+                elif nhan in {"trich yeu", "trich yeu noi dung"} and not trich_yeu:
+                    trich_yeu = gia_tri
 
-def tim_file_pdf(driver):
-    files = {}
-    for link in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
-        href = link.get_attribute("href") or ""
-        parsed = urlparse(href)
-        if parsed.scheme != "https" or parsed.hostname != HOST:
-            continue
-        path = unquote(parsed.path)
-        if "/$file/" not in path.casefold():
-            continue
-        filename = path.rsplit("/", 1)[-1]
-        if filename.casefold().endswith(".pdf"):
-            files[href] = filename
-    return files
+        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+            try:
+                drv.switch_to.frame(f)
+                quet_bang_chi_tiet(drv, depth + 1)
+                drv.switch_to.parent_frame()
+            except Exception:
+                drv.switch_to.default_content()
+
+    driver.switch_to.default_content()
+    quet_bang_chi_tiet(driver)
+
+    ngay_hien_thi = ngay_ban_hanh or ngay_den
+    if so_ky_hieu and ngay_hien_thi:
+        so_hieu_day_du = f"{so_ky_hieu} ngày {ngay_hien_thi}"
+    elif so_ky_hieu:
+        so_hieu_day_du = so_ky_hieu
+    else:
+        so_hieu_day_du = "Không xác định"
+
+    return {
+        "so_hieu": so_hieu_day_du,
+        "ngay_den": ngay_den,
+        "trich_yeu": trich_yeu or "Không có trích yếu"
+    }
+
+def lay_moc_thoi_gian_tu_ten_file(filename):
+    """
+    Bóc tách mốc thời gian từ tên file dongdau để so sánh lấy file mới nhất.
+    Ví dụ: dongdau20055_10-11-2026-14-10-03_...pdf -> datetime(2026, 11, 10, 14, 10, 3)
+    """
+    # Mẫu 1: DD-MM-YYYY-HH-MM-SS (phổ biến nhất trên file dongdau)
+    m1 = re.search(r'(\d{2})-(\d{2})-(\d{4})-(\d{2})-(\d{2})-(\d{2})', filename)
+    if m1:
+        try:
+            d, mo, y, h, mi, s = map(int, m1.groups())
+            return datetime(y, mo, d, h, mi, s)
+        except ValueError:
+            pass
+
+    # Mẫu 2: DDMMYYYY_HHMMSS
+    m2 = re.search(r'(\d{2})(\d{2})(\d{4})[_-](\d{2})(\d{2})(\d{2})', filename)
+    if m2:
+        try:
+            d, mo, y, h, mi, s = map(int, m2.groups())
+            return datetime(y, mo, d, h, mi, s)
+        except ValueError:
+            pass
+
+    return datetime.min
+
+def tim_file_dongdau_moi_nhat(driver):
+    """
+    Quét toàn bộ file PDF đính kèm, lọc các file 'dongdau' và chọn duy nhất file có thời gian gần nhất.
+    """
+    files = []
+
+    def quet_link_pdf(drv, depth=0):
+        if depth > 4:
+            return
+        for link in drv.find_elements(By.CSS_SELECTOR, "a[href]"):
+            href = link.get_attribute("href") or ""
+            parsed = urlparse(href)
+            if parsed.scheme != "https" or parsed.hostname != HOST:
+                continue
+            path = unquote(parsed.path)
+            if "/$file/" not in path.casefold():
+                continue
+            filename = path.rsplit("/", 1)[-1]
+            if filename.casefold().endswith(".pdf"):
+                if not any(u == href for u, _ in files):
+                    files.append((href, filename))
+
+        for f in drv.find_elements(By.CSS_SELECTOR, "frame, iframe"):
+            try:
+                drv.switch_to.frame(f)
+                quet_link_pdf(drv, depth + 1)
+                drv.switch_to.parent_frame()
+            except Exception:
+                drv.switch_to.default_content()
+
+    driver.switch_to.default_content()
+    quet_link_pdf(driver)
+
+    if not files:
+        return None, None
+
+    # Lọc các file có chữ 'dongdau'
+    dongdau_files = [(u, f) for u, f in files if "dongdau" in f.casefold()]
+    if dongdau_files:
+        # Sắp xếp theo thời gian giảm dần (mới nhất lên đầu)
+        dongdau_files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
+        return dongdau_files[0]
+
+    # Dự phòng nếu văn bản chưa đóng dấu thì lấy file PDF đầu tiên
+    return files[0]
 
 def tai_pdf(driver, pdf_url, detail_url):
     with requests.Session() as session:
@@ -249,9 +298,9 @@ def kiem_tra_va_trich_xuat_chu(pdf_data):
     except Exception:
         return ""
 
-def xac_dinh_han_xu_ly(row_text, pdf_text):
+def xac_dinh_han_xu_ly(trich_yeu, pdf_text):
     han_xu_ly = "Không có hạn"
-    combined_text = row_text + "\n" + pdf_text
+    combined_text = trich_yeu + "\n" + pdf_text
     
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở, ban, ngành|các sở, ban, ngành, đoàn thể|các cơ quan, đơn vị|UBND các huyện, thị xã, thành phố)", combined_text))
@@ -268,11 +317,11 @@ def xac_dinh_han_xu_ly(row_text, pdf_text):
 
 def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
     if not GOOGLE_WEB_APP_URL:
-        print("[!] Chưa cấu hình GOOGLE_WEB_APP_URL.")
+        print("[!] Chưa cấu hình GOOGLE_WEB_APP_URL trong GitHub Secrets.")
         return
 
     try:
-        thoi_gian_hien_tai = datetime.now().strftime("%d/11/2026 %H:%M:%S")
+        thoi_gian_hien_tai = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         payload = []
         for idx, item in enumerate(danh_sach_ket_qua, start=1):
             payload.append({
@@ -306,36 +355,40 @@ def main():
         
         # Test nhanh 10 văn bản đầu tiên
         tat_ca_van_ban = tat_ca_van_ban[:10]
-        print(f"==> Tiến hành quét chi tiết {len(tat_ca_van_ban)} văn bản.")
+        print(f"==> Tiến hành quét chi tiết {len(tat_ca_van_ban)} văn bản đầu tiên.")
         
         danh_sach_ket_qua = []
 
         for idx, vb in enumerate(tat_ca_van_ban, start=1):
-            print(f"\n--- Xử lý văn bản {idx}/10 ---")
+            print(f"\n--- Xử lý văn bản {idx}/{len(tat_ca_van_ban)} ---")
             try:
                 driver.get(vb["url"])
                 WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                time.sleep(1)
+
+                # Bóc tách chuẩn xác các trường từ trang chi tiết
+                thong_tin = trich_xuat_tu_trang_chi_tiet(driver)
                 
-                # Lấy số hiệu và trích yếu chuẩn xác trực tiếp từ trang chi tiết
-                so_hieu, trich_yeu = trich_xuat_tu_trang_chi_tiet(driver, vb["row_text"])
-                
-                # Lấy thêm nội dung PDF để dò hạn xử lý
-                files = tim_file_pdf(driver)
+                # Chọn duy nhất file dongdau có thời gian mới nhất để quét hạn
+                pdf_url, fname = tim_file_dongdau_moi_nhat(driver)
                 pdf_text = ""
-                if files:
-                    pdf_url = next(iter(files.keys()))
+                if pdf_url:
+                    print(f"  -> File đóng dấu mới nhất: {fname}")
                     try:
                         pdf_data = tai_pdf(driver, pdf_url, vb["url"])
                         pdf_text = kiem_tra_va_trich_xuat_chu(pdf_data)
                     except Exception:
                         pass
 
-                han_xu_ly = xac_dinh_han_xu_ly(vb["row_text"], pdf_text)
+                han_xu_ly = xac_dinh_han_xu_ly(thong_tin["trich_yeu"], pdf_text)
                 
-                print(f"  -> Số hiệu: {so_hieu} | Trích yếu: {trich_yeu[:40]}... | Hạn: {han_xu_ly}")
+                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Ngày đến: {thong_tin['ngay_den']}")
+                print(f"  -> Trích yếu: {thong_tin['trich_yeu'][:70]}...")
+                print(f"  -> Hạn xử lý: {han_xu_ly}")
+
                 danh_sach_ket_qua.append({
-                    "so_hieu": so_hieu,
-                    "trich_yeu": trich_yeu,
+                    "so_hieu": thong_tin["so_hieu"],
+                    "trich_yeu": thong_tin["trich_yeu"],
                     "han_xu_ly": han_xu_ly
                 })
             except Exception as e:
