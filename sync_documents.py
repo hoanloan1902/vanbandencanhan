@@ -113,7 +113,6 @@ def thu_thập_thong_tin_trang_hien_tai(driver, seen_urls):
 def chuyen_trang_tiep(driver, so_trang_tiep):
     def click_next(drv):
         try:
-            # Tìm nút chuyển đúng số trang tiếp theo hoặc nút Trang sau / >
             xpath_expr = (
                 f"//*[normalize-space(text())='Trang {so_trang_tiep}' "
                 f"or normalize-space(text())='{so_trang_tiep}' "
@@ -229,25 +228,39 @@ def trich_xuat_tu_trang_chi_tiet(driver):
     }
 
 def lay_moc_thoi_gian_tu_ten_file(filename):
-    m1 = re.search(r'(\d{2})-(\d{2})-(\d{4})-(\d{2})-(\d{2})-(\d{2})', filename)
-    if m1:
+    """
+    Quét tất cả các mốc thời gian có trong tên file (cả dạng đóng dấu và ký số)
+    và trả về mốc thời gian mới nhất (lớn nhất) của file đó.
+    Hỗ trợ các dạng:
+    - 10-11-2026-14-10-03
+    - 12.11.2026_14h49p18 hoặc 12-11-2026_10h21p56
+    - 04112026_165222
+    """
+    cac_moc = []
+
+    # Dạng 1: DD-MM-YYYY-HH-MM-SS hoặc DD.MM.YYYY_HHhMMpSS hoặc DD-MM-YYYY_HHhMMpSS
+    for m in re.finditer(r'(\d{2})[.-](\d{2})[.-](\d{4})[_-](\d{2})[h:-](\d{2})[p:-](\d{2})', filename):
         try:
-            d, mo, y, h, mi, s = map(int, m1.groups())
-            return datetime(y, mo, d, h, mi, s)
+            d, mo, y, h, mi, s = map(int, m.groups())
+            cac_moc.append(datetime(y, mo, d, h, mi, s))
         except ValueError:
             pass
 
-    m2 = re.search(r'(\d{2})(\d{2})(\d{4})[_-](\d{2})(\d{2})(\d{2})', filename)
-    if m2:
+    # Dạng 2: DDMMYYYY_HHMMSS
+    for m in re.finditer(r'(\d{2})(\d{2})(\d{4})[_-](\d{2})(\d{2})(\d{2})', filename):
         try:
-            d, mo, y, h, mi, s = map(int, m2.groups())
-            return datetime(y, mo, d, h, mi, s)
+            d, mo, y, h, mi, s = map(int, m.groups())
+            cac_moc.append(datetime(y, mo, d, h, mi, s))
         except ValueError:
             pass
 
-    return datetime.min
+    return max(cac_moc) if cac_moc else datetime.min
 
-def tim_file_dongdau_moi_nhat(driver):
+def tim_file_van_ban_moi_nhat(driver):
+    """
+    1. Ưu tiên nhóm file có chứa 'dongdau' -> chọn file có thời gian mới nhất.
+    2. Nếu không có file 'dongdau' -> lấy trong toàn bộ file PDF đính kèm và chọn file có thời gian mới nhất.
+    """
     files = []
 
     def quet_link_pdf(drv, depth=0):
@@ -285,6 +298,7 @@ def tim_file_dongdau_moi_nhat(driver):
         dongdau_files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
         return dongdau_files[0]
 
+    # Không có file dongdau -> sắp xếp toàn bộ file PDF theo thời gian mới nhất
     files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
     return files[0]
 
@@ -429,10 +443,10 @@ def main():
 
                 thong_tin = trich_xuat_tu_trang_chi_tiet(driver)
                 
-                pdf_url, fname = tim_file_dongdau_moi_nhat(driver)
+                pdf_url, fname = tim_file_van_ban_moi_nhat(driver)
                 pdf_text = ""
                 if pdf_url:
-                    print(f"  -> File đóng dấu mới nhất: {fname}")
+                    print(f"  -> File văn bản mới nhất: {fname}")
                     try:
                         pdf_data = tai_pdf(driver, pdf_url, vb["url"])
                         pdf_text = kiem_tra_va_trich_xuat_chu(pdf_data)
