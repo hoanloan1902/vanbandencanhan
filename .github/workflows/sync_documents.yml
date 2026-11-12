@@ -2,9 +2,9 @@ name: Tự động theo dõi văn bản đến
 
 on:
   schedule:
-    # Lịch chạy tự động định kỳ (07:30, 10:30, 14:30, 17:30 giờ Việt Nam từ Thứ 2 đến Thứ 6)
-    - cron: '30 0,3,7,10 * * 1-5'
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào trên GitHub
+    # Tương ứng 07:30, 10:30, 14:30, 17:30 hàng ngày theo giờ Việt Nam (UTC+7)
+    - cron: '30 0,3,7,10 * * *'
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào
 
 jobs:
   run-script:
