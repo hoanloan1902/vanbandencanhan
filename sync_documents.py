@@ -1,3 +1,4 @@
+import base64
 import builtins
 import os
 import re
@@ -221,6 +222,7 @@ def trich_xuat_tu_trang_chi_tiet(driver):
         so_hieu_day_du = "Không xác định"
 
     return {
+        "so_ky_hieu": so_ky_hieu or "KhongSo",
         "so_hieu": so_hieu_day_du,
         "ngay_den": ngay_den,
         "ngay_ban_hanh": ngay_ban_hanh,
@@ -228,17 +230,7 @@ def trich_xuat_tu_trang_chi_tiet(driver):
     }
 
 def lay_moc_thoi_gian_tu_ten_file(filename):
-    """
-    Quét tất cả các mốc thời gian có trong tên file (cả dạng đóng dấu và ký số)
-    và trả về mốc thời gian mới nhất (lớn nhất) của file đó.
-    Hỗ trợ các dạng:
-    - 10-11-2026-14-10-03
-    - 12.11.2026_14h49p18 hoặc 12-11-2026_10h21p56
-    - 04112026_165222
-    """
     cac_moc = []
-
-    # Dạng 1: DD-MM-YYYY-HH-MM-SS hoặc DD.MM.YYYY_HHhMMpSS hoặc DD-MM-YYYY_HHhMMpSS
     for m in re.finditer(r'(\d{2})[.-](\d{2})[.-](\d{4})[_-](\d{2})[h:-](\d{2})[p:-](\d{2})', filename):
         try:
             d, mo, y, h, mi, s = map(int, m.groups())
@@ -246,7 +238,6 @@ def lay_moc_thoi_gian_tu_ten_file(filename):
         except ValueError:
             pass
 
-    # Dạng 2: DDMMYYYY_HHMMSS
     for m in re.finditer(r'(\d{2})(\d{2})(\d{4})[_-](\d{2})(\d{2})(\d{2})', filename):
         try:
             d, mo, y, h, mi, s = map(int, m.groups())
@@ -257,10 +248,6 @@ def lay_moc_thoi_gian_tu_ten_file(filename):
     return max(cac_moc) if cac_moc else datetime.min
 
 def tim_file_van_ban_moi_nhat(driver):
-    """
-    1. Ưu tiên nhóm file có chứa 'dongdau' -> chọn file có thời gian mới nhất.
-    2. Nếu không có file 'dongdau' -> lấy trong toàn bộ file PDF đính kèm và chọn file có thời gian mới nhất.
-    """
     files = []
 
     def quet_link_pdf(drv, depth=0):
@@ -298,7 +285,6 @@ def tim_file_van_ban_moi_nhat(driver):
         dongdau_files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
         return dongdau_files[0]
 
-    # Không có file dongdau -> sắp xếp toàn bộ file PDF theo thời gian mới nhất
     files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
     return files[0]
 
@@ -344,10 +330,31 @@ def parse_ngay_vn(ngay_str):
             continue
     return None
 
-def xac_dinh_han_xu_ly(thong_tin, pdf_text):
+def lay_cau_trich_dan_xung_quanh(text, start_pos, end_pos):
+    """Lấy trọn vẹn câu giao nhiệm vụ chứa mốc thời hạn để kiểm chứng nhanh"""
+    left = text.rfind(".", 0, start_pos)
+    left_nl = text.rfind("\n", 0, start_pos)
+    start_idx = max(left, left_nl)
+    start_idx = 0 if start_idx == -1 else start_idx + 1
+
+    right = text.find(".", end_pos)
+    right_nl = text.find("\n", end_pos)
+    candidates = [p for p in (right, right_nl) if p != -1]
+    end_idx = min(candidates) + 1 if candidates else min(len(text), end_pos + 120)
+
+    cau = chuan_hoa(text[start_idx:end_idx])
+    if len(cau) > 260:
+        cau = "..." + chuan_hoa(text[max(0, start_pos - 100):min(len(text), end_pos + 120)]) + "..."
+    return cau
+
+def xac_dinh_han_va_trich_dan(thong_tin, pdf_text):
+    """
+    Trả về cặp (han_xu_ly, trich_dan_cau_giao_han).
+    Luôn chọn mốc thời hạn SỚM NHẤT từ ngày ban hành/ngày đến trở đi.
+    """
     combined_text = chuan_hoa(thong_tin["trich_yeu"] + " " + pdf_text)
     if not combined_text:
-        return "Không có hạn"
+        return "Không có hạn", "-"
 
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
     giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở,?\s*(?:ban,?\s*)?ngành|các cơ quan,?\s*đơn vị|ubnd các xã,?\s*phường|ubnd các huyện)", combined_text))
@@ -365,17 +372,24 @@ def xac_dinh_han_xu_ly(thong_tin, pdf_text):
             continue
         if ngay_moc and dt < ngay_moc:
             continue
-        cac_han_tim_thay.append((dt, ngay_raw.replace("-", "/")))
+        cau_trich_dan = lay_cau_trich_dan_xung_quanh(combined_text, m.start(), m.end())
+        cac_han_tim_thay.append((dt, ngay_raw.replace("-", "/"), cau_trich_dan))
 
     if not cac_han_tim_thay:
-        return "Không có hạn"
+        return "Không có hạn", "-"
 
     if giao_rieng_so_khac and not lien_quan_skhcn and not giao_chung_cac_so:
-        return "Không có hạn"
+        return "Không có hạn", "-"
 
     cac_han_tim_thay.sort(key=lambda x: x[0])
     han_som_nhat = cac_han_tim_thay[0][1]
-    return f"Trước ngày {han_som_nhat}"
+    trich_dan_som_nhat = cac_han_tim_thay[0][2]
+    return f"Trước ngày {han_som_nhat}", trich_dan_som_nhat
+
+def tao_ten_file_chuan(so_ky_hieu, han_xu_ly):
+    so_an_toan = re.sub(r'[\\/*?:"<>|]', '-', so_ky_hieu)
+    han_an_toan = re.sub(r'[\\/*?:"<>|]', '-', han_xu_ly)
+    return f"[{han_an_toan}]_{so_an_toan}.pdf"
 
 def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
     if not GOOGLE_WEB_APP_URL:
@@ -392,11 +406,14 @@ def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
                 "so_hieu": item["so_hieu"],
                 "trich_yeu": item["trich_yeu"],
                 "han_xu_ly": item["han_xu_ly"],
+                "trich_dan_han": item["trich_dan_han"],
+                "pdf_filename": item.get("pdf_filename", ""),
+                "pdf_base64": item.get("pdf_base64", ""),
                 "thoi_gian": thoi_gian_hien_tai
             })
         
-        response = requests.post(GOOGLE_WEB_APP_URL, json=payload, timeout=30, verify=False)
-        print(f"-> [Google Sheets Web App] Phản hồi: {response.text}")
+        response = requests.post(GOOGLE_WEB_APP_URL, json=payload, timeout=90, verify=False)
+        print(f"-> [Google Sheets & Drive Web App] Phản hồi: {response.text}")
     except Exception as e:
         print(f"[!] Lỗi đẩy dữ liệu lên Google Sheets: {e}")
 
@@ -445,6 +462,7 @@ def main():
                 
                 pdf_url, fname = tim_file_van_ban_moi_nhat(driver)
                 pdf_text = ""
+                pdf_data = None
                 if pdf_url:
                     print(f"  -> File văn bản mới nhất: {fname}")
                     try:
@@ -453,19 +471,29 @@ def main():
                     except Exception:
                         pass
 
-                han_xu_ly = xac_dinh_han_xu_ly(thong_tin, pdf_text)
-                
+                han_xu_ly, trich_dan_han = xac_dinh_han_va_trich_dan(thong_tin, pdf_text)
                 print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Hạn xử lý: {han_xu_ly}")
+
+                pdf_filename = ""
+                pdf_base64 = ""
+                # Chỉ đóng gói file PDF đẩy lên Google Drive đối với văn bản có hạn (Phương án A)
+                if han_xu_ly != "Không có hạn" and pdf_data:
+                    pdf_filename = tao_ten_file_chuan(thong_tin["so_ky_hieu"], han_xu_ly)
+                    pdf_base64 = base64.b64encode(pdf_data).decode("ascii")
+                    print(f"  -> Đính kèm đẩy Drive: {pdf_filename}")
 
                 danh_sach_ket_qua.append({
                     "so_hieu": thong_tin["so_hieu"],
                     "trich_yeu": thong_tin["trich_yeu"],
-                    "han_xu_ly": han_xu_ly
+                    "han_xu_ly": han_xu_ly,
+                    "trich_dan_han": trich_dan_han,
+                    "pdf_filename": pdf_filename,
+                    "pdf_base64": pdf_base64
                 })
             except Exception as e:
                 print(f"  [!] Lỗi xử lý văn bản này: {e}")
 
-        print("\n5. Đang đẩy toàn bộ dữ liệu lên Google Sheets...")
+        print("\n5. Đang đồng bộ dữ liệu lên Google Sheets & Google Drive...")
         day_du_lieu_len_google_sheets(danh_sach_ket_qua)
         
         print("\n=== HOÀN TẤT ĐỒNG BỘ TOÀN BỘ! ===")
