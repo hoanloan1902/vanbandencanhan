@@ -63,6 +63,7 @@ def dang_nhap(driver):
 
 def thu_thập_thong_tin_trang_hien_tai(driver):
     danh_sach = []
+    seen_urls = set()
     
     def quet_khung(drv, depth=0):
         if depth > 4: 
@@ -71,7 +72,7 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
         rows = drv.find_elements(By.TAG_NAME, "tr")
         for row in rows:
             try:
-                checkboxes = row.find_elements(By.XPATH, ".//input[@type='checkbox']")
+                checkboxes = row.find_elements(By.XPATH, "./td//input[@type='checkbox']")
                 if not checkboxes:
                     continue
                 
@@ -86,11 +87,15 @@ def thu_thập_thong_tin_trang_hien_tai(driver):
                         url_detail = href
                         break
                 
+                # Khử trùng lặp tuyệt đối theo đường dẫn gốc (bỏ qua tham số ngẫu nhiên phía sau)
                 if url_detail:
-                    danh_sach.append({
-                        "row_text": row_text,
-                        "url": url_detail
-                    })
+                    base_url = url_detail.split("?")[0]
+                    if base_url not in seen_urls:
+                        seen_urls.add(base_url)
+                        danh_sach.append({
+                            "row_text": row_text,
+                            "url": url_detail
+                        })
             except Exception:
                 continue
                 
@@ -133,12 +138,6 @@ def lay_gia_tri_o(cell):
     return val_text
 
 def trich_xuat_tu_trang_chi_tiet(driver):
-    """
-    Đọc chính xác từng ô trong bảng 'Các thông tin cơ bản' theo đúng giao diện Lotus Notes:
-    - Số / ký hiệu: 10152/UBND-KT
-    - Ngày đến: 10/11/2026 | Ngày ban hành: 10/11/2026
-    - Trích yếu: ...
-    """
     so_ky_hieu = ""
     ngay_den = ""
     ngay_ban_hanh = ""
@@ -194,15 +193,11 @@ def trich_xuat_tu_trang_chi_tiet(driver):
     return {
         "so_hieu": so_hieu_day_du,
         "ngay_den": ngay_den,
+        "ngay_ban_hanh": ngay_ban_hanh,
         "trich_yeu": trich_yeu or "Không có trích yếu"
     }
 
 def lay_moc_thoi_gian_tu_ten_file(filename):
-    """
-    Bóc tách mốc thời gian từ tên file dongdau để so sánh lấy file mới nhất.
-    Ví dụ: dongdau20055_10-11-2026-14-10-03_...pdf -> datetime(2026, 11, 10, 14, 10, 3)
-    """
-    # Mẫu 1: DD-MM-YYYY-HH-MM-SS (phổ biến nhất trên file dongdau)
     m1 = re.search(r'(\d{2})-(\d{2})-(\d{4})-(\d{2})-(\d{2})-(\d{2})', filename)
     if m1:
         try:
@@ -211,7 +206,6 @@ def lay_moc_thoi_gian_tu_ten_file(filename):
         except ValueError:
             pass
 
-    # Mẫu 2: DDMMYYYY_HHMMSS
     m2 = re.search(r'(\d{2})(\d{2})(\d{4})[_-](\d{2})(\d{2})(\d{2})', filename)
     if m2:
         try:
@@ -223,9 +217,6 @@ def lay_moc_thoi_gian_tu_ten_file(filename):
     return datetime.min
 
 def tim_file_dongdau_moi_nhat(driver):
-    """
-    Quét toàn bộ file PDF đính kèm, lọc các file 'dongdau' và chọn duy nhất file có thời gian gần nhất.
-    """
     files = []
 
     def quet_link_pdf(drv, depth=0):
@@ -258,14 +249,13 @@ def tim_file_dongdau_moi_nhat(driver):
     if not files:
         return None, None
 
-    # Lọc các file có chữ 'dongdau'
     dongdau_files = [(u, f) for u, f in files if "dongdau" in f.casefold()]
     if dongdau_files:
-        # Sắp xếp theo thời gian giảm dần (mới nhất lên đầu)
         dongdau_files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
         return dongdau_files[0]
 
-    # Dự phòng nếu văn bản chưa đóng dấu thì lấy file PDF đầu tiên
+    # Nếu không có chữ dongdau, vẫn ưu tiên file PDF có mốc thời gian đóng dấu/ký số mới nhất
+    files.sort(key=lambda item: lay_moc_thoi_gian_tu_ten_file(item[1]), reverse=True)
     return files[0]
 
 def tai_pdf(driver, pdf_url, detail_url):
@@ -285,8 +275,13 @@ def tai_pdf(driver, pdf_url, detail_url):
         return response.content
 
 def kiem_tra_va_trich_xuat_chu(pdf_data):
+    # Cắt bỏ rác trước %PDF- nếu server trả kèm byte thừa ở đầu file
+    idx_pdf = pdf_data.find(b"%PDF-")
+    if idx_pdf > 0:
+        pdf_data = pdf_data[idx_pdf:]
+
     try:
-        reader = PdfReader(BytesIO(pdf_data))
+        reader = PdfReader(BytesIO(pdf_data), strict=False)
         if reader.is_encrypted:
             return ""
         text = ""
@@ -298,22 +293,57 @@ def kiem_tra_va_trich_xuat_chu(pdf_data):
     except Exception:
         return ""
 
-def xac_dinh_han_xu_ly(trich_yeu, pdf_text):
-    han_xu_ly = "Không có hạn"
-    combined_text = trich_yeu + "\n" + pdf_text
-    
+def parse_ngay_vn(ngay_str):
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(ngay_str.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+def xac_dinh_han_xu_ly(thong_tin, pdf_text):
+    """
+    - Bắt tất cả các cụm từ giao hạn (trước ngày, trong ngày, chậm nhất ngày, hạn cuối...).
+    - Chuyển sang ngày thực tế, loại bỏ các mốc đã qua trước ngày ban hành/ngày đến.
+    - Nếu có nhiều nhiệm vụ với các hạn khác nhau -> tự động lấy HẠN SỚM NHẤT.
+    """
+    combined_text = chuan_hoa(thong_tin["trich_yeu"] + " " + pdf_text)
+    if not combined_text:
+        return "Không có hạn"
+
+    # Kiểm tra đối tượng nhận/giao việc
     lien_quan_skhcn = bool(re.search(r"(?i)(?:sở khoa học và công nghệ|skhcn)", combined_text))
-    giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở, ban, ngành|các sở, ban, ngành, đoàn thể|các cơ quan, đơn vị|UBND các huyện, thị xã, thành phố)", combined_text))
+    giao_chung_cac_so = bool(re.search(r"(?i)(?:các sở,?\s*(?:ban,?\s*)?ngành|các cơ quan,?\s*đơn vị|ubnd các xã,?\s*phường|ubnd các huyện)", combined_text))
     giao_rieng_so_khac = bool(re.search(r"(?i)sở\s+(?:giao thông vận tải|y tế|giáo dục và đào tạo|tài chính|tài nguyên và môi trường|nông nghiệp và phát triển nông thôn|lao động)", combined_text))
 
-    match_han = re.search(r"(?i)(?:trước ngày|chậm nhất ngày|hoàn thành trước ngày|thời hạn báo cáo|thực hiện trước)\s*[:]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", combined_text)
-    
-    if match_han:
-        ngay_tim_thay = match_han.group(1)
-        if lien_quan_skhcn or giao_chung_cac_so or not giao_rieng_so_khac:
-            han_xu_ly = f"Trước ngày {ngay_tim_thay}"
+    # Mốc tham chiếu để loại bỏ các mốc lịch sử trong phần căn cứ (ví dụ: "hoàn thành trước ngày 28/02/2026" trong văn bản tháng 11/2026)
+    ngay_moc = parse_ngay_vn(thong_tin.get("ngay_ban_hanh") or thong_tin.get("ngay_den") or "")
 
-    return han_xu_ly
+    # Tìm tất cả các mốc thời hạn có kèm từ khóa chỉ đạo
+    pattern_han = r"(?i)(?:trước ngày|trong ngày|vào ngày|chậm nhất(?:\s+là)?(?:\s+trong|\s+trước)?\s+ngày|hoàn thành(?:\s+trước|\s+trong)?\s+ngày|thời hạn(?:\s+báo cáo|\s+gửi)?(?:\s+trước|\s+trong)?\s+ngày|thực hiện trước(?:\s+ngày)?|gửi về.*?(?:trước|trong)\s+ngày)\s*[:]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})"
+    
+    cac_han_tim_thay = []
+    for m in re.finditer(pattern_han, combined_text):
+        ngay_raw = m.group(1)
+        dt = parse_ngay_vn(ngay_raw)
+        if not dt:
+            continue
+        # Chỉ lấy các mốc từ ngày ban hành/ngày đến trở đi (loại bỏ ngày cũ ở phần "Thực hiện Kế hoạch...")
+        if ngay_moc and dt < ngay_moc:
+            continue
+        cac_han_tim_thay.append((dt, ngay_raw.replace("-", "/")))
+
+    if not cac_han_tim_thay:
+        return "Không có hạn"
+
+    # Nếu chỉ giao riêng cho sở khác mà không dính tới Sở KH&CN và không giao chung các sở ngành -> Không có hạn
+    if giao_rieng_so_khac and not lien_quan_skhcn and not giao_chung_cac_so:
+        return "Không có hạn"
+
+    # Sắp xếp tăng dần theo thời gian để lấy HẠN SỚM NHẤT
+    cac_han_tim_thay.sort(key=lambda x: x[0])
+    han_som_nhat = cac_han_tim_thay[0][1]
+    return f"Trước ngày {han_som_nhat}"
 
 def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
     if not GOOGLE_WEB_APP_URL:
@@ -353,9 +383,9 @@ def main():
         import time; time.sleep(6)
         tat_ca_van_ban = thu_thập_thong_tin_trang_hien_tai(driver)
         
-        # Test nhanh 10 văn bản đầu tiên
+        # Test nhanh 10 văn bản đầu tiên (đã khử trùng lặp)
         tat_ca_van_ban = tat_ca_van_ban[:10]
-        print(f"==> Tiến hành quét chi tiết {len(tat_ca_van_ban)} văn bản đầu tiên.")
+        print(f"==> Tiến hành quét chi tiết {len(tat_ca_van_ban)} văn bản duy nhất đầu tiên.")
         
         danh_sach_ket_qua = []
 
@@ -366,10 +396,8 @@ def main():
                 WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
                 time.sleep(1)
 
-                # Bóc tách chuẩn xác các trường từ trang chi tiết
                 thong_tin = trich_xuat_tu_trang_chi_tiet(driver)
                 
-                # Chọn duy nhất file dongdau có thời gian mới nhất để quét hạn
                 pdf_url, fname = tim_file_dongdau_moi_nhat(driver)
                 pdf_text = ""
                 if pdf_url:
@@ -380,7 +408,7 @@ def main():
                     except Exception:
                         pass
 
-                han_xu_ly = xac_dinh_han_xu_ly(thong_tin["trich_yeu"], pdf_text)
+                han_xu_ly = xac_dinh_han_xu_ly(thong_tin, pdf_text)
                 
                 print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Ngày đến: {thong_tin['ngay_den']}")
                 print(f"  -> Trích yếu: {thong_tin['trich_yeu'][:70]}...")
