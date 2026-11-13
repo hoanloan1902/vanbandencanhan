@@ -3,9 +3,8 @@ name: Tự động theo dõi văn bản đến
 on:
   schedule:
     # Tương ứng 07:15, 10:15, 14:15, 17:15 hàng ngày theo giờ Việt Nam (UTC+7)
-    # Dùng phút 15 để tránh tắc nghẽn hàng đợi của GitHub vào các giờ chẵn (:00, :30)
     - cron: '15 0,3,7,10 * * *'
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào
+  workflow_dispatch:
 
 jobs:
   run-script:
