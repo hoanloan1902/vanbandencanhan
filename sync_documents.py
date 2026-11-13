@@ -181,17 +181,13 @@ def trich_xuat_tu_trang_chi_tiet(driver):
         if depth > 4:
             return
 
-        # 1. Bắt trọn dòng "Người gửi: ... Ngày gửi: ... Ý kiến: ..." dưới mục Nội dung công việc
         try:
             body_text = chuan_hoa(drv.find_element(By.TAG_NAME, "body").text)
-            
-            # Trích xuất nguyên cụm thông tin giao việc (Người gửi + Ngày gửi + Ý kiến)
             cac_dong_giao = re.findall(
                 r"(?i)(Người gửi:\s*[^|]+?Ngày gửi:\s*(?:\d{1,2}:\d{2}\s+)?(\d{2}/\d{2}/\d{4})\s*Ý kiến:\s*.*?)(?=\s*(?:\+\s*Kết quả xử lý|Kết quả xử lý|Người xử lý|Các thông tin phân phối|Người gửi:|$))",
                 body_text
             )
             if cac_dong_giao:
-                # Sắp xếp theo ngày gửi mới nhất
                 cac_dong_giao.sort(key=lambda item: datetime.strptime(item[1], "%d/%m/%Y"), reverse=True)
                 y_kien_chi_dao = chuan_hoa(cac_dong_giao[0][0])
                 ngay_giao_viec = cac_dong_giao[0][1]
@@ -203,7 +199,6 @@ def trich_xuat_tu_trang_chi_tiet(driver):
         except Exception:
             pass
 
-        # 2. Quét bảng thông tin cơ bản
         for row in drv.find_elements(By.TAG_NAME, "tr"):
             cells = row.find_elements(By.XPATH, "./th | ./td")
             if len(cells) < 2:
