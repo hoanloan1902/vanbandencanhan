@@ -173,12 +173,37 @@ def trich_xuat_tu_trang_chi_tiet(driver):
     ngay_den = ""
     ngay_ban_hanh = ""
     trich_yeu = ""
+    ngay_giao_viec = ""
+    y_kien_chi_dao = ""
 
     def quet_bang_chi_tiet(drv, depth=0):
-        nonlocal so_ky_hieu, ngay_den, ngay_ban_hanh, trich_yeu
+        nonlocal so_ky_hieu, ngay_den, ngay_ban_hanh, trich_yeu, ngay_giao_viec, y_kien_chi_dao
         if depth > 4:
             return
 
+        # 1. Bắt trọn dòng "Người gửi: ... Ngày gửi: ... Ý kiến: ..." dưới mục Nội dung công việc
+        try:
+            body_text = chuan_hoa(drv.find_element(By.TAG_NAME, "body").text)
+            
+            # Trích xuất nguyên cụm thông tin giao việc (Người gửi + Ngày gửi + Ý kiến)
+            cac_dong_giao = re.findall(
+                r"(?i)(Người gửi:\s*[^|]+?Ngày gửi:\s*(?:\d{1,2}:\d{2}\s+)?(\d{2}/\d{2}/\d{4})\s*Ý kiến:\s*.*?)(?=\s*(?:\+\s*Kết quả xử lý|Kết quả xử lý|Người xử lý|Các thông tin phân phối|Người gửi:|$))",
+                body_text
+            )
+            if cac_dong_giao:
+                # Sắp xếp theo ngày gửi mới nhất
+                cac_dong_giao.sort(key=lambda item: datetime.strptime(item[1], "%d/%m/%Y"), reverse=True)
+                y_kien_chi_dao = chuan_hoa(cac_dong_giao[0][0])
+                ngay_giao_viec = cac_dong_giao[0][1]
+            else:
+                cac_ngay_gui = re.findall(r"(?i)Ngày gửi:\s*(?:\d{1,2}:\d{2}\s+)?(\d{2}/\d{2}/\d{4})", body_text)
+                if cac_ngay_gui:
+                    cac_ngay_gui.sort(key=lambda d: datetime.strptime(d, "%d/%m/%Y"), reverse=True)
+                    ngay_giao_viec = cac_ngay_gui[0]
+        except Exception:
+            pass
+
+        # 2. Quét bảng thông tin cơ bản
         for row in drv.find_elements(By.TAG_NAME, "tr"):
             cells = row.find_elements(By.XPATH, "./th | ./td")
             if len(cells) < 2:
@@ -225,6 +250,8 @@ def trich_xuat_tu_trang_chi_tiet(driver):
         "so_ky_hieu": so_ky_hieu or "KhongSo",
         "so_hieu": so_hieu_day_du,
         "ngay_den": ngay_den,
+        "ngay_giao_viec": ngay_giao_viec or ngay_den,
+        "y_kien_chi_dao": y_kien_chi_dao or "-",
         "ngay_ban_hanh": ngay_ban_hanh,
         "trich_yeu": trich_yeu or "Không có trích yếu"
     }
@@ -400,7 +427,9 @@ def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
                 "stt": idx,
                 "so_hieu": item["so_hieu"],
                 "ngay_den": item.get("ngay_den", ""),
+                "ngay_giao_viec": item.get("ngay_giao_viec", ""),
                 "trich_yeu": item["trich_yeu"],
+                "y_kien_chi_dao": item.get("y_kien_chi_dao", "-"),
                 "han_xu_ly": item["han_xu_ly"],
                 "trich_dan_han": item["trich_dan_han"],
                 "pdf_filename": item.get("pdf_filename", ""),
@@ -468,7 +497,7 @@ def main():
                         pass
 
                 han_xu_ly, trich_dan_han = xac_dinh_han_va_trich_dan(thong_tin, pdf_text)
-                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Ngày đến: {thong_tin['ngay_den']} | Hạn xử lý: {han_xu_ly}")
+                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Giao việc: {thong_tin['y_kien_chi_dao']} | Hạn xử lý: {han_xu_ly}")
 
                 pdf_filename = ""
                 pdf_base64 = ""
@@ -480,7 +509,9 @@ def main():
                 danh_sach_ket_qua.append({
                     "so_hieu": thong_tin["so_hieu"],
                     "ngay_den": thong_tin["ngay_den"],
+                    "ngay_giao_viec": thong_tin["ngay_giao_viec"],
                     "trich_yeu": thong_tin["trich_yeu"],
+                    "y_kien_chi_dao": thong_tin["y_kien_chi_dao"],
                     "han_xu_ly": han_xu_ly,
                     "trich_dan_han": trich_dan_han,
                     "pdf_filename": pdf_filename,
