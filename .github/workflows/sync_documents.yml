@@ -2,15 +2,14 @@ name: Tự động theo dõi văn bản đến
 
 on:
   schedule:
-    # Lịch chạy chuẩn xác theo khung giờ Việt Nam: 07:30, 10:30, 14:30, 17:30 hàng ngày
-    # (Đã quy đổi sang giờ UTC bằng cách trừ đi 7 tiếng: 00:30, 03:30, 07:30, 10:30 UTC)
-    - cron: '30 0,3,7,10 * * *'
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào trên GitHub
+    # Tương ứng 07:15, 10:15, 14:15, 17:15 hàng ngày theo giờ Việt Nam (UTC+7)
+    # Dùng phút 15 để tránh tắc nghẽn hàng đợi của GitHub vào các giờ chẵn (:00, :30)
+    - cron: '15 0,3,7,10 * * *'
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 20 # Cho phép job chạy tối đa 20 phút để tránh timeout
 
     steps:
       - name: Checkout mã nguồn
@@ -33,7 +32,7 @@ jobs:
 
       - name: Chạy script theo dõi văn bản đến
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OFFICE_PASSWORD: ${{ secrets.OFFICE_PASSWORD }}
+          GOOGLE_WEB_APP_URL: ${{ secrets.GOOGLE_WEB_APP_URL }}
         run: |
           python sync_documents.py
