@@ -399,6 +399,7 @@ def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
             payload.append({
                 "stt": idx,
                 "so_hieu": item["so_hieu"],
+                "ngay_den": item.get("ngay_den", ""),
                 "trich_yeu": item["trich_yeu"],
                 "han_xu_ly": item["han_xu_ly"],
                 "trich_dan_han": item["trich_dan_han"],
@@ -467,7 +468,7 @@ def main():
                         pass
 
                 han_xu_ly, trich_dan_han = xac_dinh_han_va_trich_dan(thong_tin, pdf_text)
-                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Hạn xử lý: {han_xu_ly}")
+                print(f"  -> Số hiệu: {thong_tin['so_hieu']} | Ngày đến: {thong_tin['ngay_den']} | Hạn xử lý: {han_xu_ly}")
 
                 pdf_filename = ""
                 pdf_base64 = ""
@@ -478,6 +479,7 @@ def main():
 
                 danh_sach_ket_qua.append({
                     "so_hieu": thong_tin["so_hieu"],
+                    "ngay_den": thong_tin["ngay_den"],
                     "trich_yeu": thong_tin["trich_yeu"],
                     "han_xu_ly": han_xu_ly,
                     "trich_dan_han": trich_dan_han,
