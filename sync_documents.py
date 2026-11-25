@@ -31,6 +31,14 @@ URL_LOGIN = f"https://{HOST}/qlvb/index.nsf"
 USERNAME = "hoanph.skhcn"
 GOOGLE_WEB_APP_URL = os.getenv("GOOGLE_WEB_APP_URL", "").strip()
 
+# Cấu hình Zalo Bot (lấy từ GitHub Actions Secrets)
+ZALO_BOT_TOKEN = os.getenv("ZALO_BOT_TOKEN", "").strip()
+ZALO_CHAT_ID = os.getenv("ZALO_CHAT_ID", "").strip()
+ZALO_API_URL_TEMPLATE = os.getenv(
+    "ZALO_API_URL_TEMPLATE",
+    "https://bot-api.zapps.me/bot{token}/sendMessage"
+).strip()
+
 def tao_trinh_duyet():
     options = Options()
     options.add_argument("--headless=new")
@@ -437,6 +445,89 @@ def day_du_lieu_len_google_sheets(danh_sach_ket_qua):
     except Exception as e:
         print(f"[!] Lỗi đẩy dữ liệu lên Google Sheets: {e}")
 
+# ==============================================================================
+# TÍNH NĂNG MỚI: LỌC VĂN BẢN BÁO ĐỎ (< 2 NGÀY) VÀ GỬI QUA ZALO BOT
+# ==============================================================================
+def tach_ngay_han_tu_chuoi(han_str):
+    """Bóc tách ngày từ chuỗi dạng 'Trước ngày 26/11/2026' hoặc '26/11/2026'."""
+    han_str = (han_str or "").strip()
+    if not han_str or han_str == "Không có hạn":
+        return None
+    m = re.search(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", han_str)
+    if not m:
+        return None
+    dt = parse_ngay_vn(m.group(1))
+    return dt.date() if dt else None
+
+def gui_canh_bao_zalo_bot(danh_sach_ket_qua):
+    if not ZALO_BOT_TOKEN or not ZALO_CHAT_ID:
+        print("[!] Chưa cấu hình ZALO_BOT_TOKEN hoặc ZALO_CHAT_ID trong GitHub Secrets (bỏ qua gửi Zalo).")
+        return
+
+    tz_vn = timezone(timedelta(hours=7))
+    hom_nay = datetime.now(tz_vn).date()
+    ds_bao_do = []
+
+    for item in danh_sach_ket_qua:
+        ngay_han = tach_ngay_han_tu_chuoi(item.get("han_xu_ly"))
+        if not ngay_han:
+            continue
+
+        so_ngay_con_lai = (ngay_han - hom_nay).days
+        # Lọc các văn bản có hạn nhỏ hơn 2 ngày (quá hạn < 0, hôm nay = 0, ngày mai = 1)
+        if so_ngay_con_lai < 2:
+            if so_ngay_con_lai < 0:
+                nhan = f"🚨 QUÁ HẠN {abs(so_ngay_con_lai)} NGÀY"
+            elif so_ngay_con_lai == 0:
+                nhan = "🔴 HẾT HẠN HÔM NAY"
+            else:
+                nhan = "🔴 CÒN 1 NGÀY"
+
+            chi_dao = item.get("y_kien_chi_dao", "-")
+            dong_chi_dao = f"\n   Chỉ đạo: {chi_dao}" if chi_dao and chi_dao != "-" else ""
+
+            ds_bao_do.append((
+                so_ngay_con_lai,
+                f"[{nhan}] {item.get('so_hieu', '')}\n"
+                f"   Trích yếu: {item.get('trich_yeu', '')}\n"
+                f"   Hạn xử lý: {ngay_han.strftime('%d/%m/%Y')}"
+                f"{dong_chi_dao}"
+            ))
+
+    if not ds_bao_do:
+        print("-> [Zalo Bot] Không có văn bản nào có hạn dưới 2 ngày.")
+        return
+
+    # Sắp xếp văn bản quá hạn / gấp nhất lên đầu
+    ds_bao_do.sort(key=lambda x: x[0])
+    cac_muc = [x[1] for x in ds_bao_do]
+
+    url = ZALO_API_URL_TEMPLATE.format(token=ZALO_BOT_TOKEN)
+    tieu_de = f"⚠️ CẢNH BÁO VĂN BẢN GẤP (< 2 NGÀY) - {hom_nay.strftime('%d/%m/%Y')}\nTổng số: {len(cac_muc)} văn bản\n====================\n"
+
+    # Tự động chia gói tin nhắn dưới 1800 ký tự để không bị lỗi giới hạn độ dài của Zalo Bot
+    goi_tin = []
+    doan_hien_tai = tieu_de
+    for muc in cac_muc:
+        if len(doan_hien_tai) + len(muc) + 25 > 1800:
+            goi_tin.append(doan_hien_tai.strip())
+            doan_hien_tai = muc + "\n--------------------\n"
+        else:
+            doan_hien_tai += muc + "\n--------------------\n"
+    if doan_hien_tai.strip():
+        goi_tin.append(doan_hien_tai.strip())
+
+    try:
+        for idx, noi_dung in enumerate(goi_tin, start=1):
+            payload = {
+                "chat_id": ZALO_CHAT_ID,
+                "text": noi_dung
+            }
+            resp = requests.post(url, json=payload, timeout=20)
+            print(f"-> [Zalo Bot] Gửi phần {idx}/{len(goi_tin)} | HTTP {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"[!] Lỗi gửi thông báo qua Zalo Bot: {e}")
+
 def main():
     driver = None
     try:
@@ -517,6 +608,9 @@ def main():
 
         print("\n5. Đang đồng bộ dữ liệu lên Google Sheets & Google Drive...")
         day_du_lieu_len_google_sheets(danh_sach_ket_qua)
+
+        print("\n6. Đang kiểm tra văn bản hạn < 2 ngày để gửi cảnh báo Zalo Bot...")
+        gui_canh_bao_zalo_bot(danh_sach_ket_qua)
         
         print("\n=== HOÀN TẤT ĐỒNG BỘ TOÀN BỘ! ===")
         return 0
