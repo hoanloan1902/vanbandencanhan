@@ -33,10 +33,8 @@ jobs:
         env:
           OFFICE_PASSWORD: ${{ secrets.OFFICE_PASSWORD }}
           GOOGLE_WEB_APP_URL: ${{ secrets.GOOGLE_WEB_APP_URL }}
+          ZALO_BOT_TOKEN: ${{ secrets.ZALO_BOT_TOKEN }}
+          ZALO_CHAT_ID: ${{ secrets.ZALO_CHAT_ID }}
+          ZALO_API_URL_TEMPLATE: ${{ secrets.ZALO_API_URL_TEMPLATE }}
         run: |
           python sync_documents.py
-env:
-  OFFICE_PASSWORD: ${{ secrets.OFFICE_PASSWORD }}
-  GOOGLE_WEB_APP_URL: ${{ secrets.GOOGLE_WEB_APP_URL }}
-  ZALO_BOT_TOKEN: ${{ secrets.ZALO_BOT_TOKEN }}
-  ZALO_CHAT_ID: ${{ secrets.ZALO_CHAT_ID }}
